@@ -1,0 +1,10 @@
+python-dotenv>=1.0.0
+fastapi>=0.115
+uvicorn[standard]>=0.30
+strawberry-graphql[fastapi]>=0.240
+sqlalchemy>=2.0
+pyodbc>=5.1
+imapclient>=3.0
+pydantic-settings>=2.3
+python-dateutil>=2.9
+tenacity>=8.3
