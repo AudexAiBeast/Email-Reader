@@ -7,9 +7,9 @@ import httpx
 logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = "http://localhost:11434"
-OLLAMA_MODEL = "llama3.2"
-SUMMARIZE_TIMEOUT = 60
-COMPANY_TIMEOUT = 30
+OLLAMA_MODEL = "qwen3:14b"
+SUMMARIZE_TIMEOUT = 120
+COMPANY_TIMEOUT = 60
 
 def _call_ollama(prompt: str, system_prompt: str, timeout: int = 30) -> Optional[str]:
     try:

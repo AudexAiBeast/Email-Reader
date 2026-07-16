@@ -56,7 +56,11 @@ class Query:
                 return None
             if row.ai_summary:
                 return row.ai_summary
-            thread_text = row.body_text or ""
+            thread_text = row.body_text or row.body_html or ""
+            if thread_text.startswith("<"):
+                import re
+                thread_text = re.sub(r"<[^>]+>", "", thread_text)
+                thread_text = re.sub(r"\s+", " ", thread_text).strip()
             if not thread_text.strip():
                 return None
             summary = summarize_thread(thread_text)
