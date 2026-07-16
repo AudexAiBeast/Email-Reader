@@ -8,11 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
+from app.company.detector import extract_company_name
 from app.db.models import EmailStore
 from app.db.session import session_scope
 from app.email_ingest.attachment_classifier import classify, sanitize_filename
 from app.email_ingest.ftp_client import FtpClient
 from app.email_ingest.mime_parser import ParsedEmail, parse_message
+from app.email_ingest.ocr_pipeline import process_attachment
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +94,27 @@ def process_message(raw_bytes: bytes, uid: int, mailbox: str) -> bool:
 
             attachments_json, attachment_count = _upload_attachments(parsed)
 
+            company_info = extract_company_name(
+                parsed.from_address or "",
+                parsed.body_text,
+            )
+
+            ocr_results = []
+            try:
+                with FtpClient(settings) as ftp:
+                    for att in parsed.attachments:
+                        category = classify(att.filename)
+                        ocr_result = process_attachment(
+                            filename=att.filename,
+                            file_bytes=att.content,
+                            email_message_id=message_id,
+                            category=category,
+                        )
+                        if ocr_result:
+                            ocr_results.append(ocr_result)
+            except Exception:
+                logger.exception("OCR pipeline error for message_id=%s", message_id)
+
             row = EmailStore(
                 message_id=message_id,
                 message_id_raw=parsed.message_id_raw,
@@ -112,6 +135,10 @@ def process_message(raw_bytes: bytes, uid: int, mailbox: str) -> bool:
                 attachments=json.dumps(attachments_json) if attachments_json else None,
                 has_attachments=bool(attachments_json),
                 attachment_count=attachment_count,
+                company_name=company_info.get("company_name"),
+                company_domain_source=company_info.get("domain_source"),
+                company_signature_source=company_info.get("signature_source"),
+                ocr_markdown_paths=json.dumps(ocr_results) if ocr_results else None,
                 mailbox=mailbox,
             )
             session.add(row)

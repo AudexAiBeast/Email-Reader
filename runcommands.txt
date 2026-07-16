@@ -1,0 +1,9 @@
+=== MAILREADER - RUN COMMANDS ===
+
+Backend (FastAPI):
+  cd C:\Users\FusionGamingMasterPC\Desktop\mailreader
+  python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+Frontend (Vite/React):
+  cd C:\Users\FusionGamingMasterPC\Desktop\mailreader\frontend
+  npm run dev

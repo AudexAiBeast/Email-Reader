@@ -1,6 +1,9 @@
 # secrets
 .env
 
+# OCR output
+ocr_output/
+
 # Python
 __pycache__/
 *.pyc

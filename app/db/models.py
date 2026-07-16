@@ -38,6 +38,13 @@ class EmailStore(Base):
     has_attachments: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     attachment_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    company_name: Mapped[str | None] = mapped_column(NVARCHAR(255))
+    company_domain_source: Mapped[str | None] = mapped_column(NVARCHAR(255))
+    company_signature_source: Mapped[str | None] = mapped_column(NVARCHAR(255))
+
+    ai_summary: Mapped[str | None] = mapped_column(NVARCHAR("max"))
+    ocr_markdown_paths: Mapped[str | None] = mapped_column(NVARCHAR("max"))
+
     mailbox: Mapped[str | None] = mapped_column(NVARCHAR(255))
     created_at: Mapped[datetime.datetime] = mapped_column(
         DATETIME2(precision=3), nullable=False, default=datetime.datetime.utcnow

@@ -10,6 +10,7 @@ from strawberry.fastapi import GraphQLRouter
 
 from app.api.ftp_routes import router as ftp_router
 from app.api.logs_routes import router as logs_router
+from app.api.ocr_routes import router as ocr_router
 from app.config import settings
 from app.db.session import ensure_schema
 from app.email_ingest.idle_listener import start_listener, stop_listener
@@ -53,6 +54,7 @@ graphql_router = GraphQLRouter(schema)
 app.include_router(graphql_router, prefix="/graphql")
 app.include_router(ftp_router)
 app.include_router(logs_router)
+app.include_router(ocr_router)
 
 
 @app.get("/health")

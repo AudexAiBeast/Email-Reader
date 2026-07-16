@@ -1,0 +1,15 @@
+{
+    "folders": [
+        {
+            "name": "mailreader",
+            "path": "."
+        },
+        {
+            "name": "minerocr",
+            "uri": "vscode-remote://attached-container%2B%7B%22containerName%22%3A%22%2FMinerU%22%2C%22settings%22%3A%7B%22context%22%3A%22desktop-linux%22%7D%7D/home/paddleocr"
+        }
+    ],
+    "settings": {
+        "window.restoreWindows": "none"
+    }
+}

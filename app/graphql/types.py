@@ -14,10 +14,23 @@ class AttachmentEntry:
     ftp_path: str
 
 
+@strawberry.type
+class OcrEntry:
+    filename: str
+    path: str
+    original: str
+
+
 @strawberry.enum
 class EmailOrderBy(enum.Enum):
     DATE_DESC = "DATE_DESC"
     DATE_ASC = "DATE_ASC"
+
+
+@strawberry.type
+class CompanyFolder:
+    name: str
+    count: int
 
 
 @strawberry.type
@@ -41,6 +54,11 @@ class EmailType:
     has_attachments: bool
     attachment_count: int
     attachments: list[AttachmentEntry]
+    company_name: str | None
+    company_domain_source: str | None
+    company_signature_source: str | None
+    ai_summary: str | None
+    ocr_markdown_paths: list[OcrEntry] | None
     created_at: datetime.datetime
 
     @staticmethod
@@ -57,6 +75,14 @@ class EmailType:
                     attachments_list.append(
                         AttachmentEntry(category=category, index=int(index_str), filename=filename, ftp_path=path)
                     )
+
+        ocr_list: list[OcrEntry] = []
+        if row.ocr_markdown_paths:
+            try:
+                ocr_data = json.loads(row.ocr_markdown_paths)
+                ocr_list = [OcrEntry(**e) for e in ocr_data]
+            except (json.JSONDecodeError, TypeError, Exception):
+                pass
 
         return EmailType(
             id=row.id,
@@ -78,6 +104,11 @@ class EmailType:
             has_attachments=row.has_attachments,
             attachment_count=row.attachment_count,
             attachments=attachments_list,
+            company_name=row.company_name,
+            company_domain_source=row.company_domain_source,
+            company_signature_source=row.company_signature_source,
+            ai_summary=row.ai_summary,
+            ocr_markdown_paths=ocr_list if ocr_list else None,
             created_at=row.created_at,
         )
 

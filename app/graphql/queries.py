@@ -1,31 +1,80 @@
 import datetime
+from typing import Optional
 
 import strawberry
 from sqlalchemy import func, select
+from sqlalchemy.orm import Query
 
 from app.config import settings
+from app.company.ollama_client import summarize_thread
 from app.db.models import EmailStore
 from app.db.session import session_scope
-from app.graphql.types import EmailConnection, EmailOrderBy, EmailType
+from app.graphql.types import CompanyFolder, EmailConnection, EmailOrderBy, EmailType
 
 
 @strawberry.type
 class Query:
-    @strawberry.field(description="Look up a single email by its Message-ID (as stored, post sha256 normalization).")
-    def email(self, message_id: str) -> EmailType | None:
+    @strawberry.field(description="List all company folders with email counts.")
+    def folders(self) -> list[CompanyFolder]:
         with session_scope() as session:
-            row = session.execute(select(EmailStore).where(EmailStore.message_id == message_id)).scalar_one_or_none()
+            rows = (
+                session.execute(
+                    select(EmailStore.company_name, func.count().label("cnt"))
+                    .where(EmailStore.company_name.isnot(None))
+                    .group_by(EmailStore.company_name)
+                    .order_by(func.count().desc())
+                )
+                .all()
+            )
+            uncategorized_count = (
+                session.execute(
+                    select(func.count())
+                    .where(EmailStore.company_name.is_(None))
+                )
+                .scalar_one()
+            )
+            folders = [CompanyFolder(name=r.company_name, count=r.cnt) for r in rows]
+            if uncategorized_count > 0:
+                folders.append(CompanyFolder(name="Uncategorized", count=uncategorized_count))
+            return folders
+
+    @strawberry.field(description="Look up a single email by its Message-ID.")
+    def email(self, message_id: str) -> Optional[EmailType]:
+        with session_scope() as session:
+            row = session.execute(
+                select(EmailStore).where(EmailStore.message_id == message_id)
+            ).scalar_one_or_none()
             return EmailType.from_model(row) if row else None
 
-    @strawberry.field(description="Filter/paginate stored emails. Read-only — no mutations exist in this API.")
+    @strawberry.field(description="Generate or retrieve AI summary for an email thread.")
+    def email_summary(self, email_id: int) -> Optional[str]:
+        with session_scope() as session:
+            row = session.execute(
+                select(EmailStore).where(EmailStore.id == email_id)
+            ).scalar_one_or_none()
+            if not row:
+                return None
+            if row.ai_summary:
+                return row.ai_summary
+            thread_text = row.body_text or ""
+            if not thread_text.strip():
+                return None
+            summary = summarize_thread(thread_text)
+            if summary:
+                row.ai_summary = summary
+                session.commit()
+            return summary
+
+    @strawberry.field(description="Filter/paginate stored emails. Read-only API.")
     def emails(
         self,
-        date: datetime.date | None = None,
-        date_from: datetime.date | None = None,
-        date_to: datetime.date | None = None,
-        sender: str | None = None,
-        subject_contains: str | None = None,
-        has_attachments: bool | None = None,
+        date: Optional[datetime.date] = None,
+        date_from: Optional[datetime.date] = None,
+        date_to: Optional[datetime.date] = None,
+        sender: Optional[str] = None,
+        subject_contains: Optional[str] = None,
+        has_attachments: Optional[bool] = None,
+        company_name: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
         order_by: EmailOrderBy = EmailOrderBy.DATE_DESC,
@@ -46,6 +95,11 @@ class Query:
             conditions.append(EmailStore.subject.ilike(f"%{subject_contains}%"))
         if has_attachments is not None:
             conditions.append(EmailStore.has_attachments == has_attachments)
+        if company_name is not None:
+            if company_name == "Uncategorized":
+                conditions.append(EmailStore.company_name.is_(None))
+            else:
+                conditions.append(EmailStore.company_name == company_name)
 
         with session_scope() as session:
             stmt = select(EmailStore)
