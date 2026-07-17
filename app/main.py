@@ -5,7 +5,9 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
+from starlette.requests import ClientDisconnect
 from strawberry.fastapi import GraphQLRouter
 
 from app.api.ftp_routes import router as ftp_router
@@ -49,6 +51,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(ClientDisconnect)
+async def _client_disconnect_handler(request, exc: ClientDisconnect):
+    logger.warning("Client disconnected before GraphQL response could be sent")
+    return Response(status_code=499)
 
 graphql_router = GraphQLRouter(schema)
 app.include_router(graphql_router, prefix="/graphql")

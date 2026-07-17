@@ -11,7 +11,7 @@ from app.db.models import Base
 
 logger = logging.getLogger(__name__)
 
-_SP_DIR = Path(__file__).resolve().parent.parent / "scripts"
+_SP_DIR = Path(__file__).resolve().parent.parent.parent / "scripts"
 
 engine = create_engine(settings.mssql_connection_string, pool_pre_ping=True, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
