@@ -5,12 +5,12 @@ import posixpath
 from datetime import datetime, timezone
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.company.detector import extract_company_name
 from app.db.models import EmailStore
 from app.db.session import session_scope
+from app.db.stored_procedures import call_sp
 from app.email_ingest.attachment_classifier import classify, sanitize_filename
 from app.email_ingest.ftp_client import FtpClient
 from app.email_ingest.mime_parser import ParsedEmail, parse_message
@@ -115,7 +115,7 @@ def process_message(raw_bytes: bytes, uid: int, mailbox: str) -> bool:
             except Exception:
                 logger.exception("OCR pipeline error for message_id=%s", message_id)
 
-            row = EmailStore(
+            sp_result = call_sp(session, "dbo.sp_InsertEmailStore",
                 message_id=message_id,
                 message_id_raw=parsed.message_id_raw,
                 from_address=parsed.from_address or None,
@@ -141,13 +141,15 @@ def process_message(raw_bytes: bytes, uid: int, mailbox: str) -> bool:
                 ocr_markdown_paths=json.dumps(ocr_results) if ocr_results else None,
                 mailbox=mailbox,
             )
-            session.add(row)
-            try:
-                session.commit()
-            except IntegrityError:
-                session.rollback()
-                logger.info("message_id=%s hit unique-constraint race, treating as already stored", message_id)
+
+            if sp_result is None or sp_result.get("reason") == "DUPLICATE":
+                logger.info(
+                    "message_id=%s already stored (SP returned DUPLICATE), skipping re-ingest",
+                    message_id,
+                )
                 return True
+
+            session.commit()
 
             logger.info(
                 "Stored message_id=%s uid=%s subject=%r attachments=%s",
