@@ -63,12 +63,12 @@ BEGIN
         DECLARE @JOB_ORDERSNO INT = NULL
         DECLARE @WO_EX_DOCSNO INT = NULL
 
-        SELECT @WO_EX_DOCSNO = TOP 1 WoExecutionDocSno
+        SELECT TOP 1 @WO_EX_DOCSNO = WoExecutionDocSno
         FROM WoExecutionDoc
         WHERE (@subject   IS NOT NULL AND @subject   LIKE '%' + DocumentNo + '%')
            OR (@body_text IS NOT NULL AND @body_text LIKE '%' + DocumentNo + '%')
 
-        SELECT @JOB_ORDERSNO = TOP 1 JobOrderSno
+        SELECT TOP 1 @JOB_ORDERSNO = JobOrderSno
         FROM JOB_ORDER
         WHERE (@subject   IS NOT NULL AND @subject   LIKE '%' + PurchaseOrderNo + '%')
            OR (@body_text IS NOT NULL AND @body_text LIKE '%' + PurchaseOrderNo + '%')
