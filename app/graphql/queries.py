@@ -1,15 +1,79 @@
 import datetime
+import re
 from typing import Optional
 
 import strawberry
-from sqlalchemy import func, select
-from sqlalchemy.orm import Query
+from sqlalchemy import func, or_, select
 
 from app.config import settings
 from app.company.ollama_client import summarize_thread
 from app.db.models import EmailStore
 from app.db.session import session_scope
 from app.graphql.types import CompanyFolder, EmailConnection, EmailOrderBy, EmailType
+
+_RE_PREFIX = re.compile(r"^(?:\s*(?:re|fwd?|aw|wg|ref|sv|vs|antw|odp|答复|转发)\s*(?:\[\d+\])?\s*:\s*)+", re.IGNORECASE)
+
+
+def _normalize_subject(subject: Optional[str]) -> str:
+    if not subject:
+        return ""
+    s = _RE_PREFIX.sub("", subject).strip()
+    return s.lower() if s else subject.lower().strip()
+
+
+def _assemble_thread(row, session) -> str:
+    thread_msgs = {}
+    thread_msgs[row.message_id] = row
+
+    norm = _normalize_subject(row.subject)
+    if norm:
+        candidates = session.execute(
+            select(EmailStore).where(
+                EmailStore.id != row.id,
+                func.lower(EmailStore.subject).contains(norm),
+            )
+        ).scalars().all()
+        for c in candidates:
+            thread_msgs[c.message_id] = c
+
+    raw_ids = set()
+    if row.in_reply_to:
+        rid = row.in_reply_to.strip().strip("<>")
+        if rid:
+            raw_ids.add(rid)
+    if row.references_header:
+        for ref in re.findall(r"<[^>]+>", row.references_header):
+            raw_ids.add(ref.strip("<>"))
+
+    if raw_ids:
+        parents = session.execute(
+            select(EmailStore).where(
+                or_(EmailStore.message_id_raw.in_(raw_ids), EmailStore.message_id.in_(raw_ids))
+            )
+        ).scalars().all()
+        for p in parents:
+            thread_msgs[p.message_id] = p
+
+        children = session.execute(
+            select(EmailStore).where(EmailStore.in_reply_to.in_(raw_ids))
+        ).scalars().all()
+        for c in children:
+            thread_msgs[c.message_id] = c
+
+    sorted_msgs = sorted(thread_msgs.values(), key=lambda m: m.email_date_utc)
+
+    parts = []
+    for msg in sorted_msgs:
+        body = msg.body_text or msg.body_html or ""
+        if body.startswith("<"):
+            body = re.sub(r"<[^>]+>", "", body)
+            body = re.sub(r"\s+", " ", body).strip()
+        sender = msg.from_address or "unknown"
+        subject = msg.subject or "(no subject)"
+        date = msg.date_raw or str(msg.email_date_utc)[:19]
+        parts.append(f"From: {sender}\nDate: {date}\nSubject: {subject}\n\n{body}")
+
+    return "\n\n---\n\n".join(parts)
 
 
 @strawberry.type
@@ -56,11 +120,7 @@ class Query:
                 return None
             if row.ai_summary:
                 return row.ai_summary
-            thread_text = row.body_text or row.body_html or ""
-            if thread_text.startswith("<"):
-                import re
-                thread_text = re.sub(r"<[^>]+>", "", thread_text)
-                thread_text = re.sub(r"\s+", " ", thread_text).strip()
+            thread_text = _assemble_thread(row, session)
             if not thread_text.strip():
                 return None
             summary = summarize_thread(thread_text)
