@@ -1,6 +1,7 @@
 import logging
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -9,6 +10,8 @@ from app.config import settings
 from app.db.models import Base
 
 logger = logging.getLogger(__name__)
+
+_SP_DIR = Path(__file__).resolve().parent.parent / "scripts"
 
 engine = create_engine(settings.mssql_connection_string, pool_pre_ping=True, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
@@ -37,6 +40,8 @@ def ensure_schema() -> None:
     if "EmailStore" in existing:
         _migrate_emailstore(inspector)
 
+    _ensure_stored_procedures()
+
 
 def _migrate_emailstore(inspector) -> None:
     existing_columns = {c["name"] for c in inspector.get_columns("EmailStore")}
@@ -46,6 +51,19 @@ def _migrate_emailstore(inspector) -> None:
                 logger.info("Adding column EmailStore.%s", col_name)
                 conn.execute(text(f"ALTER TABLE EmailStore ADD {col_name} {col_type}"))
         conn.commit()
+
+
+def _ensure_stored_procedures() -> None:
+    sp_file = _SP_DIR / "sp_InsertEmailStore.sql"
+    if not sp_file.exists():
+        logger.warning("Stored-procedure script not found: %s", sp_file)
+        return
+    sql = sp_file.read_text()
+    batches = [b.strip() for b in sql.replace("\r\n", "\n").split("\nGO\n") if b.strip()]
+    with engine.begin() as conn:
+        for batch in batches:
+            conn.exec_driver_sql(batch)
+    logger.info("Stored procedures deployed (CREATE OR ALTER)")
 
 
 def get_db() -> Generator[Session, None, None]:
