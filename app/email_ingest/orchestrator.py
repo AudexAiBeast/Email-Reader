@@ -96,7 +96,7 @@ def process_message(raw_bytes: bytes, uid: int, mailbox: str) -> bool:
 
             company_info = extract_company_name(
                 parsed.from_address or "",
-                parsed.body_text,
+                parsed.body_text or parsed.body_html,
             )
 
             ocr_results = []

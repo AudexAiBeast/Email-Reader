@@ -6,8 +6,8 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 FREE_EMAIL_DOMAINS = frozenset({
-    "gmail.com", "yahoo.com", "yahoo.co.in", "outlook.com", "hotmail.com",
-    "live.com", "msn.com", "icloud.com", "me.com", "mac.com",
+    "gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.in", "outlook.com",
+    "hotmail.com", "live.com", "msn.com", "icloud.com", "me.com", "mac.com",
     "aol.com", "protonmail.com", "proton.me", "zoho.com", "yandex.com",
     "mail.com", "inbox.com", "fastmail.com", "gmx.com", "rediffmail.com",
     "rediff.co.in", "rocketmail.com", "ymail.com", "att.net", "verizon.net",
@@ -52,8 +52,18 @@ def extract_domain(from_address: str) -> Optional[str]:
 
 def domain_to_company_name(domain: str) -> str:
     parts = domain.split('.')
-    if parts[0] == 'www':
-        parts = parts[1:]
+    while parts and parts[0] in ('www', 'mail', 'smtp', 'imap', 'pop', 'email',
+                                  'in', 'uk', 'de', 'fr', 'es', 'it', 'nl',
+                                  'au', 'ca', 'jp', 'cn', 'br', 'sg', 'hk',
+                                  'ae', 'sa', 'my', 'th', 'vn', 'ph', 'id',
+                                  'co', 'com', 'org', 'net', 'ac', 'gov', 'edu'):
+        if len(parts) > 2 and parts[0] in ('in', 'uk', 'de', 'fr', 'es', 'it',
+                                            'nl', 'au', 'ca', 'jp', 'cn', 'br',
+                                            'sg', 'hk', 'ae', 'sa', 'my', 'th',
+                                            'vn', 'ph', 'id', 'co'):
+            parts.pop(0)
+        else:
+            break
     name = parts[0] if parts else domain
     name = re.sub(r'[^a-zA-Z0-9]', ' ', name)
     name = name.strip()
@@ -94,25 +104,48 @@ def extract_signature_body(body_text: Optional[str]) -> Optional[str]:
         sig_text = sig_text[:1000]
     return sig_text if sig_text else None
 
+_URL_RE = re.compile(r'https?://\S+', re.IGNORECASE)
+_FORWARD_HEADER = re.compile(r'^(from|sent|to|cc|bcc|date|subject|reply-to|message-id)[:\s]', re.IGNORECASE)
+_PERSON_NAME = re.compile(r"^[A-Z][a-zà-ü]+(?:\s+[A-Z][a-zà-ü]+\.?){1,3}$")
+_SINGLE_WORD = re.compile(r'^[A-Z][a-z]+$')
+
+def _clean_company_name(raw: str) -> str:
+    cleaned = re.sub(r'<[^>]+>', '', raw)
+    cleaned = re.sub(r'^[\s•·  *\-–—]+', '', cleaned)
+    cleaned = re.sub(r'[\s•·  *\-–—]+$', '', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned if 2 <= len(cleaned) <= 120 else raw
+
+def _looks_like_person(line: str) -> bool:
+    if _SINGLE_WORD.match(line):
+        return False
+    if COMPANY_INDICATORS.search(line):
+        return False
+    return bool(_PERSON_NAME.match(line))
+
 def extract_company_from_signature_text(sig_text: str) -> Optional[str]:
     lines = [l.strip() for l in sig_text.splitlines() if l.strip()]
     for line in lines:
+        if _URL_RE.search(line) or _FORWARD_HEADER.match(line):
+            continue
         if COMPANY_INDICATORS.search(line):
-            cleaned = re.sub(r'^[\s•·  *\-–—]+', '', line)
-            cleaned = re.sub(r'[\s•·  *\-–—]+$', '', cleaned)
-            cleaned = re.sub(r'\s+', ' ', cleaned)
+            cleaned = _clean_company_name(line)
             if 2 <= len(cleaned) <= 120:
                 return cleaned
     for line in lines:
-        if ROLE_TITLES.search(line):
+        if _URL_RE.search(line) or _FORWARD_HEADER.match(line):
+            continue
+        if ROLE_TITLES.search(line) or _looks_like_person(line):
             continue
         cleaned = line.strip()
         if 3 <= len(cleaned) <= 100 and not re.match(r'^[\d\s\+\-\(\)\.]+$', cleaned):
             if not re.match(r'^[\w\s\.\-]+@[\w\.\-]+$', cleaned):
                 if not re.match(r'^\+?\d[\d\s\-\(\)\.]+$', cleaned):
                     if cleaned[0].isupper():
-                        return cleaned
+                        return _clean_company_name(cleaned)
     return None
+
+_BOUNCE_SENDERS = re.compile(r'(?i)(mailer-daemon|postmaster|mail delivery subsystem|noreply|no-reply|notification)')
 
 def extract_company_name(from_address: str, body_text: Optional[str]) -> dict:
     result = {
@@ -121,17 +154,49 @@ def extract_company_name(from_address: str, body_text: Optional[str]) -> dict:
         "signature_source": None,
         "domain_free": False,
     }
+
+    if _BOUNCE_SENDERS.search(from_address):
+        result["company_name"] = "System Notifications"
+        return result
+
+    if body_text:
+        body_text = re.sub(r'(?i)<br\s*/?>', '\n', body_text)
+        body_text = re.sub(r'(?i)</p>', '\n\n', body_text)
+        body_text = re.sub(r'(?i)</div>', '\n', body_text)
+        body_text = re.sub(r'<[^>]+>', '', body_text)
+        body_text = re.sub(r'&nbsp;', ' ', body_text)
+        body_text = re.sub(r'&amp;', '&', body_text)
+        body_text = re.sub(r'&lt;', '<', body_text)
+        body_text = re.sub(r'&gt;', '>', body_text)
+
     domain = extract_domain(from_address)
     if domain:
         result["domain_source"] = domain_to_company_name(domain)
         result["domain_free"] = False
     else:
         result["domain_free"] = True
-    sig_text = extract_signature_body(body_text)
-    if sig_text:
-        sig_company = extract_company_from_signature_text(sig_text)
-        if sig_company:
-            result["signature_source"] = sig_company
+
+    sig_company = None
+    if body_text:
+        body_lines = [l.strip() for l in body_text.splitlines() if l.strip()]
+        for i, line in enumerate(body_lines):
+            stripped = line.lower().rstrip(',.')
+            if stripped in ('regards', 'best regards', 'thanks', 'sincerely', 'cheers', 'best'):
+                before_sig_lines = body_lines[max(0, i-8):i]
+                for sl in reversed(before_sig_lines):
+                    if COMPANY_INDICATORS.search(sl):
+                        sig_company = _clean_company_name(sl)
+                        break
+                break
+
+    if not sig_company:
+        sig_text = extract_signature_body(body_text)
+        if sig_text:
+            sig_company = extract_company_from_signature_text(sig_text)
+
+    if sig_company:
+        result["signature_source"] = sig_company
+
     if result["signature_source"]:
         result["company_name"] = result["signature_source"]
     else:
