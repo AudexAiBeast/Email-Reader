@@ -51,7 +51,7 @@ export default function MailDetail({ email }) {
         )}
       </div>
 
-      <AiSummary emailId={email.id} existingSummary={email.aiSummary} />
+      <AiSummary emailId={email.id} existingSummary={email.aiSummary} companyName={email.companyName} />
 
       <div className="body-toggle">
         <button

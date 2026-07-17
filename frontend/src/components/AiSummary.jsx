@@ -11,19 +11,25 @@ const SUMMARY_QUERY = `
 
 const DEBOUNCE_MS = 800;
 
-export default function AiSummary({ emailId, existingSummary }) {
+const SKIP_COMPANIES = ["System Notifications"];
+
+export default function AiSummary({ emailId, existingSummary, companyName }) {
   const [summary, setSummary] = useState(existingSummary || null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const fetchedRef = useRef(false);
   const debounceRef = useRef(null);
 
+  const skipReason = companyName && SKIP_COMPANIES.includes(companyName)
+    ? `${companyName} emails are system-generated and not summarized`
+    : null;
+
   useEffect(() => {
     setSummary(existingSummary || null);
     setError(null);
     fetchedRef.current = false;
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (!existingSummary && emailId != null) {
+    if (!existingSummary && emailId != null && !skipReason) {
       debounceRef.current = setTimeout(() => autoGenerate(), DEBOUNCE_MS);
     }
     return () => {
@@ -63,6 +69,20 @@ export default function AiSummary({ emailId, existingSummary }) {
         </div>
         <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 8 }}>
           Summarized by audAInsights
+        </div>
+      </div>
+    );
+  }
+
+  if (skipReason) {
+    return (
+      <div className="ai-summary">
+        <div className="ai-summary-header">
+          <span className="ai-badge">AI</span>
+          audAInsights Summary
+        </div>
+        <div className="ai-summary-body" style={{ color: "var(--text-dim)", fontStyle: "italic" }}>
+          {skipReason}
         </div>
       </div>
     );
