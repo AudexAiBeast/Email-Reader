@@ -59,6 +59,8 @@ class EmailType:
     company_signature_source: str | None
     ai_summary: str | None
     ocr_markdown_paths: list[OcrEntry] | None
+    job_ordersno: int | None
+    wo_execution_doc_sno: int | None
     created_at: datetime.datetime
 
     @staticmethod
@@ -109,6 +111,8 @@ class EmailType:
             company_signature_source=row.company_signature_source,
             ai_summary=row.ai_summary,
             ocr_markdown_paths=ocr_list if ocr_list else None,
+            job_ordersno=row.job_ordersno,
+            wo_execution_doc_sno=row.wo_execution_doc_sno,
             created_at=row.created_at,
         )
 

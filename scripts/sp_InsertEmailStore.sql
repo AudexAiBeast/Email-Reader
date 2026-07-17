@@ -6,6 +6,8 @@
 -- Behavior:
 --   • Checks for duplicate message_id before inserting.
 --   • Uses TRY / CATCH to handle unique-constraint race conditions.
+--   • Looks up JOB_ORDERSNO and WoExecutionDocSno by matching subject/body
+--     against JOB_ORDER.PurchaseOrderNo and WoExecutionDoc.DocumentNo.
 --   • Returns a two-column result set (result, reason) so the caller can
 --     distinguish success from duplicate without relying on exceptions.
 --
@@ -17,7 +19,7 @@
 -- so they become Python exceptions on the client side.
 -- ============================================================================
 
-CREATE OR ALTER PROCEDURE dbo.sp_InsertEmailStore
+CREATE OR ALTER PROCEDURE [dbo].[sp_InsertEmailStore]
     @message_id             NVARCHAR(400),
     @message_id_raw         NVARCHAR(MAX),
     @from_address           NVARCHAR(998)  = NULL,
@@ -48,9 +50,6 @@ BEGIN
 
     -- ------------------------------------------------------------------
     -- Early exit if the message_id is already present (idempotency guard).
-    -- This complements the client-side SELECT pre-check that exists in
-    -- the orchestrator; the SP handles the race-condition window between
-    -- the SELECT and the INSERT.
     -- ------------------------------------------------------------------
     IF EXISTS (SELECT 1 FROM dbo.EmailStore WHERE message_id = @message_id)
     BEGIN
@@ -61,6 +60,19 @@ BEGIN
     END
 
     BEGIN TRY
+        DECLARE @JOB_ORDERSNO INT = NULL
+        DECLARE @WO_EX_DOCSNO INT = NULL
+
+        SELECT @WO_EX_DOCSNO = TOP 1 WoExecutionDocSno
+        FROM WoExecutionDoc
+        WHERE (@subject   IS NOT NULL AND @subject   LIKE '%' + DocumentNo + '%')
+           OR (@body_text IS NOT NULL AND @body_text LIKE '%' + DocumentNo + '%')
+
+        SELECT @JOB_ORDERSNO = TOP 1 JobOrderSno
+        FROM JOB_ORDER
+        WHERE (@subject   IS NOT NULL AND @subject   LIKE '%' + PurchaseOrderNo + '%')
+           OR (@body_text IS NOT NULL AND @body_text LIKE '%' + PurchaseOrderNo + '%')
+
         INSERT INTO dbo.EmailStore (
             message_id,
             message_id_raw,
@@ -86,7 +98,9 @@ BEGIN
             company_signature_source,
             ocr_markdown_paths,
             mailbox,
-            created_at
+            created_at,
+            JOB_ORDERSNO,
+            WoExecutionDocSno
         ) VALUES (
             @message_id,
             @message_id_raw,
@@ -112,7 +126,9 @@ BEGIN
             @company_signature_source,
             @ocr_markdown_paths,
             @mailbox,
-            GETUTCDATE()
+            GETUTCDATE(),
+            @JOB_ORDERSNO,
+            @WO_EX_DOCSNO
         );
 
         SELECT
@@ -120,7 +136,6 @@ BEGIN
             CAST('OK' AS VARCHAR(20)) AS reason;
     END TRY
     BEGIN CATCH
-        -- 2627 = unique constraint, 2601 = duplicate key
         IF ERROR_NUMBER() IN (2627, 2601)
         BEGIN
             SELECT

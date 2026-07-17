@@ -22,6 +22,8 @@ _NEW_COLUMNS = [
     ("company_signature_source", "NVARCHAR(255)"),
     ("ai_summary", "NVARCHAR(MAX)"),
     ("ocr_markdown_paths", "NVARCHAR(MAX)"),
+    ("JOB_ORDERSNO", "INT"),
+    ("WoExecutionDocSno", "INT"),
 ]
 
 
