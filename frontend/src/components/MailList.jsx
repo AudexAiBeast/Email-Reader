@@ -146,10 +146,9 @@ export default function MailList({ companyName }) {
 
   function selectEmail(item) {
     setSelectedId(item.id);
+    setSelectedEmail(null);
     fetchSingleEmail(item.messageId);
   }
-
-  const displayedEmail = selectedEmail || items.find((i) => i.id === selectedId) || null;
 
   return (
     <div className="three-pane">
@@ -238,8 +237,10 @@ export default function MailList({ companyName }) {
       </div>
 
       <div className="pane-detail">
-        {displayedEmail ? (
-          <MailDetail email={displayedEmail} />
+        {selectedEmail ? (
+          <MailDetail key={selectedEmail.id} email={selectedEmail} />
+        ) : selectedId ? (
+          <div className="empty-state">Loading email...</div>
         ) : (
           <div className="empty-state">Select an email to view its content.</div>
         )}
