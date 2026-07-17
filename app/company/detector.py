@@ -50,24 +50,24 @@ def extract_domain(from_address: str) -> Optional[str]:
         return None
     return domain
 
+_TLD_OR_KNOWN = frozenset({
+    'com', 'org', 'net', 'ac', 'gov', 'edu', 'co', 'in', 'uk', 'de', 'fr', 'es',
+    'it', 'nl', 'au', 'ca', 'jp', 'cn', 'br', 'sg', 'hk', 'ae', 'sa', 'my', 'th',
+    'vn', 'ph', 'id', 'eu', 'ch', 'se', 'no', 'dk', 'fi', 'pl', 'cz', 'at', 'be',
+    'nz', 'za', 'mx', 'ar', 'cl', 'co', 'kr', 'tw', 'hk', 'ru', 'za',
+    'www', 'mail', 'smtp', 'imap', 'pop', 'email',
+})
+
+
 def domain_to_company_name(domain: str) -> str:
     parts = domain.split('.')
-    while parts and parts[0] in ('www', 'mail', 'smtp', 'imap', 'pop', 'email',
-                                  'in', 'uk', 'de', 'fr', 'es', 'it', 'nl',
-                                  'au', 'ca', 'jp', 'cn', 'br', 'sg', 'hk',
-                                  'ae', 'sa', 'my', 'th', 'vn', 'ph', 'id',
-                                  'co', 'com', 'org', 'net', 'ac', 'gov', 'edu'):
-        if len(parts) > 2 and parts[0] in ('in', 'uk', 'de', 'fr', 'es', 'it',
-                                            'nl', 'au', 'ca', 'jp', 'cn', 'br',
-                                            'sg', 'hk', 'ae', 'sa', 'my', 'th',
-                                            'vn', 'ph', 'id', 'co'):
-            parts.pop(0)
-        else:
-            break
+    while parts and parts[0] in _TLD_OR_KNOWN:
+        parts.pop(0)
     name = parts[0] if parts else domain
     name = re.sub(r'[^a-zA-Z0-9]', ' ', name)
     name = name.strip()
-    return name.title() if name else domain
+    name = name.title() if name else domain
+    return _normalize_company_name(name)
 
 def extract_signature_body(body_text: Optional[str]) -> Optional[str]:
     if not body_text or not body_text.strip():
@@ -147,6 +147,44 @@ def extract_company_from_signature_text(sig_text: str) -> Optional[str]:
 
 _BOUNCE_SENDERS = re.compile(r'(?i)(mailer-daemon|postmaster|mail delivery subsystem|noreply|no-reply|notification)')
 
+
+def _core_name(name: str) -> str:
+    n = re.sub(r'\s*\([^)]*\)\s*', ' ', name)
+    n = re.sub(r'(?i)\b(pvt\.?\s*ltd\.?|private\s+limited|ltd\.?|limited|llc|inc\.?|corporation|corp\.?|gmbh|llp)\s*', '', n)
+    n = re.sub(r'\s+', ' ', n).strip()
+    return n.lower()
+
+
+def _normalize_company_name(name: str) -> str:
+    if not name:
+        return name
+    name = name.strip()
+    if name.isupper() and len(name) <= 5:
+        return name
+    name = re.sub(r'\bPvt\b(?!\.)', 'Pvt.', name, flags=re.IGNORECASE)
+    name = re.sub(r'\bLtd\b(?!\.)', 'Ltd.', name, flags=re.IGNORECASE)
+    name = re.sub(r'\bPrivate Limited\b', 'Pvt. Ltd.', name, flags=re.IGNORECASE)
+    name = re.sub(r'\s{2,}', ' ', name).strip()
+    return name
+
+
+def _choose_canonical(domain_name: Optional[str], sig_name: Optional[str]) -> str:
+    if not sig_name:
+        return domain_name or "Uncategorized"
+    if not domain_name:
+        return sig_name
+    dc = _core_name(domain_name)
+    sc = _core_name(sig_name)
+    if dc == sc:
+        return sig_name
+    if len(dc) >= 3 and (dc in sc or sc in dc):
+        return sig_name if len(sig_name) >= len(domain_name) else domain_name
+    common = set(dc.split()) & set(sc.split())
+    if common:
+        return sig_name if len(sig_name) >= len(domain_name) else domain_name
+    return sig_name
+
+
 def extract_company_name(from_address: str, body_text: Optional[str]) -> dict:
     result = {
         "company_name": None,
@@ -198,9 +236,14 @@ def extract_company_name(from_address: str, body_text: Optional[str]) -> dict:
         result["signature_source"] = sig_company
 
     if result["signature_source"]:
-        result["company_name"] = result["signature_source"]
+        result["company_name"] = _choose_canonical(
+            result["domain_source"], result["signature_source"]
+        )
     else:
         result["company_name"] = result["domain_source"]
+
+    if result["company_name"]:
+        result["company_name"] = _normalize_company_name(result["company_name"])
     return result
 
 def extract_thread_text_from_body(body_text: Optional[str]) -> Optional[str]:

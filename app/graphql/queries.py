@@ -1,5 +1,6 @@
 import datetime
 import re
+import threading
 from typing import Optional
 
 import strawberry
@@ -12,6 +13,9 @@ from app.db.session import session_scope
 from app.graphql.types import CompanyFolder, EmailConnection, EmailOrderBy, EmailType
 
 _RE_PREFIX = re.compile(r"^(?:\s*(?:re|fwd?|aw|wg|ref|sv|vs|antw|odp|答复|转发)\s*(?:\[\d+\])?\s*:\s*)+", re.IGNORECASE)
+
+_summary_locks = {}
+_summary_lock = threading.Lock()
 
 
 def _normalize_subject(subject: Optional[str]) -> str:
@@ -120,14 +124,33 @@ class Query:
                 return None
             if row.ai_summary:
                 return row.ai_summary
-            thread_text = _assemble_thread(row, session)
-            if not thread_text.strip():
+
+        with _summary_lock:
+            lock_key = email_id
+            if lock_key in _summary_locks:
                 return None
-            summary = summarize_thread(thread_text)
-            if summary:
-                row.ai_summary = summary
-                session.commit()
-            return summary
+            _summary_locks[lock_key] = True
+
+        try:
+            with session_scope() as session:
+                row = session.execute(
+                    select(EmailStore).where(EmailStore.id == email_id)
+                ).scalar_one_or_none()
+                if not row:
+                    return None
+                if row.ai_summary:
+                    return row.ai_summary
+                thread_text = _assemble_thread(row, session)
+                if not thread_text.strip():
+                    return None
+                summary = summarize_thread(thread_text)
+                if summary:
+                    row.ai_summary = summary
+                    session.commit()
+                return summary
+        finally:
+            with _summary_lock:
+                _summary_locks.pop(lock_key, None)
 
     @strawberry.field(description="Filter/paginate stored emails. Read-only API.")
     def emails(

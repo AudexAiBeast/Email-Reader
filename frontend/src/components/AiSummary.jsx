@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { graphqlQuery } from "../api.js";
 
 const SUMMARY_QUERY = `
@@ -7,19 +9,26 @@ const SUMMARY_QUERY = `
   }
 `;
 
+const DEBOUNCE_MS = 800;
+
 export default function AiSummary({ emailId, existingSummary }) {
   const [summary, setSummary] = useState(existingSummary || null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const fetchedRef = useRef(false);
+  const debounceRef = useRef(null);
 
   useEffect(() => {
     setSummary(existingSummary || null);
     setError(null);
     fetchedRef.current = false;
-    if (!existingSummary) {
-      autoGenerate();
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!existingSummary && emailId != null) {
+      debounceRef.current = setTimeout(() => autoGenerate(), DEBOUNCE_MS);
     }
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
   }, [emailId]);
 
   async function autoGenerate() {
@@ -47,7 +56,11 @@ export default function AiSummary({ emailId, existingSummary }) {
           <span className="ai-badge">AI</span>
           audAInsights Summary
         </div>
-        <div className="ai-summary-body">{summary}</div>
+        <div className="ai-summary-body markdown-body">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {summary}
+          </ReactMarkdown>
+        </div>
         <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 8 }}>
           Summarized by audAInsights
         </div>
@@ -62,7 +75,10 @@ export default function AiSummary({ emailId, existingSummary }) {
           <span className="ai-badge">AI</span>
           audAInsights Summary
         </div>
-        <div className="ai-summary-loading">Generating summary with Ollama...</div>
+        <div className="ai-summary-loading">
+          <span className="spinner" />
+          Generating summary with Ollama...
+        </div>
       </div>
     );
   }
