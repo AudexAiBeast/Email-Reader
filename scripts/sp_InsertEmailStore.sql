@@ -55,7 +55,9 @@ BEGIN
     BEGIN
         SELECT
             CAST(0 AS BIGINT) AS result,
-            CAST('DUPLICATE' AS VARCHAR(20)) AS reason;
+            CAST('DUPLICATE' AS VARCHAR(20)) AS reason,
+            CAST(NULL AS INT) AS jobOrdersno,
+            CAST(NULL AS INT) AS woExecutionDocSno;
         RETURN;
     END
 
@@ -133,14 +135,18 @@ BEGIN
 
         SELECT
             SCOPE_IDENTITY() AS result,
-            CAST('OK' AS VARCHAR(20)) AS reason;
+            CAST('OK' AS VARCHAR(20)) AS reason,
+            @JOB_ORDERSNO AS jobOrdersno,
+            @WO_EX_DOCSNO AS woExecutionDocSno;
     END TRY
     BEGIN CATCH
         IF ERROR_NUMBER() IN (2627, 2601)
         BEGIN
             SELECT
                 CAST(0 AS BIGINT) AS result,
-                CAST('DUPLICATE' AS VARCHAR(20)) AS reason;
+                CAST('DUPLICATE' AS VARCHAR(20)) AS reason,
+                CAST(NULL AS INT) AS jobOrdersno,
+                CAST(NULL AS INT) AS woExecutionDocSno;
         END
         ELSE
         BEGIN

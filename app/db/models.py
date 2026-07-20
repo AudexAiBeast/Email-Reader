@@ -56,6 +56,18 @@ class EmailStore(Base):
     __table_args__ = (UniqueConstraint("message_id", name="UQ_EmailStore_message_id"),)
 
 
+class AiSummaryEvent(Base):
+    __tablename__ = "ai_summary_event"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(start=1, increment=1), primary_key=True)
+    source_table: Mapped[str] = mapped_column(NVARCHAR(255), nullable=False)
+    source_sno: Mapped[int] = mapped_column(Integer, nullable=False)
+    ai_summary: Mapped[str] = mapped_column(NVARCHAR("max"), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DATETIME2(precision=3), nullable=False, default=datetime.datetime.utcnow
+    )
+
+
 class EmailSyncState(Base):
     __tablename__ = "email_sync_state"
 

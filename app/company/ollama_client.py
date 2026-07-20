@@ -48,6 +48,24 @@ def summarize_thread(thread_text: str) -> Optional[str]:
     prompt = f"Email thread:\n\n{text}\n\nSummary:"
     return _call_ollama(prompt, system_prompt, timeout=SUMMARIZE_TIMEOUT)
 
+def update_summary(context: str) -> Optional[str]:
+    """Incremental summarization: given a previous summary + new content,
+    produce an updated combined summary."""
+    if not context or not context.strip():
+        return None
+    system_prompt = (
+        "You are audAInsights, an AI email analyst. You are given a previous "
+        "email-thread summary along with new messages and/or document data. "
+        "Produce a single updated summary that incorporates the new information. "
+        "Keep the summary under 200 words. Use plain text, no markdown."
+    )
+    text = context.strip()
+    if len(text) > 20000:
+        text = text[:20000] + "\n\n[...truncated]"
+    prompt = f"Context:\n\n{text}\n\nUpdated summary:"
+    return _call_ollama(prompt, system_prompt, timeout=SUMMARIZE_TIMEOUT)
+
+
 def extract_company_from_signature(sig_text: str) -> Optional[str]:
     if not sig_text or not sig_text.strip():
         return None

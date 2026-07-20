@@ -27,6 +27,12 @@ _NEW_COLUMNS = [
 ]
 
 
+_EXTERNAL_AI_COLUMNS = [
+    ("WoExecutionDoc", "WoExecutionDocSno", "ai_summary", "NVARCHAR(MAX)"),
+    ("JOB_ORDER", "JobOrderSno", "ai_summary", "NVARCHAR(MAX)"),
+]
+
+
 def ensure_schema() -> None:
     """Create EmailStore / email_sync_state if they don't already exist, and
     migrate new columns onto the existing table if missing. Idempotent."""
@@ -42,6 +48,7 @@ def ensure_schema() -> None:
     if "EmailStore" in existing:
         _migrate_emailstore(inspector)
 
+    _migrate_external_tables(inspector)
     _ensure_stored_procedures()
 
 
@@ -66,6 +73,18 @@ def _ensure_stored_procedures() -> None:
         for batch in batches:
             conn.exec_driver_sql(batch)
     logger.info("Stored procedures deployed (CREATE OR ALTER)")
+
+
+def _migrate_external_tables(inspector) -> None:
+    for table, pk_col, col_name, col_type in _EXTERNAL_AI_COLUMNS:
+        if table not in inspector.get_table_names():
+            logger.warning("External table %s not found, skipping ai_summary migration", table)
+            continue
+        existing_columns = {c["name"] for c in inspector.get_columns(table)}
+        if col_name not in existing_columns:
+            logger.info("Adding column %s.%s", table, col_name)
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD {col_name} {col_type}"))
 
 
 def get_db() -> Generator[Session, None, None]:
