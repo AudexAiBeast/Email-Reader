@@ -139,8 +139,20 @@ class Query:
                 if sibling_summary:
                     return sibling_summary
 
+        # Resolve JOB_ORDERSNO (direct or via WoExecutionDoc)
+        jo_sno = row.job_ordersno
+        if not jo_sno and row.wo_execution_doc_sno:
+            from sqlalchemy import text as _text
+            with session_scope() as s2:
+                result = s2.execute(
+                    _text("SELECT PlanningMasSno FROM WoExecutionDoc WHERE WoExecutionDocSno = :sno"),
+                    {"sno": row.wo_execution_doc_sno},
+                ).scalar_one_or_none()
+                if result:
+                    jo_sno = result
+        lock_key = jo_sno if jo_sno else email_id
+
         with _summary_lock:
-            lock_key = email_id
             if lock_key in _summary_locks:
                 return None
             _summary_locks[lock_key] = True

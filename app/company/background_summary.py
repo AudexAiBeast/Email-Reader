@@ -1,4 +1,5 @@
 import logging
+import re as _re
 import threading
 from datetime import datetime, timezone
 
@@ -7,16 +8,18 @@ from sqlalchemy import func, select, text
 from app.company.ollama_client import summarize_thread, update_summary
 from app.db.models import AiSummaryEvent, EmailStore
 from app.db.session import session_scope
-from app.graphql.queries import _normalize_subject
+from app.graphql.queries import _assemble_thread, _normalize_subject
 
 logger = logging.getLogger(__name__)
 
-_summary_bg_locks = {}
-_summary_bg_lock = threading.Lock()
+_jo_locks = {}
+_jo_lock = threading.Lock()
+
+_thread_locks = {}
+_thread_lock = threading.Lock()
 
 
 def _format_row_as_text(table: str, row: dict) -> str:
-    """Convert a raw DB row dict into a readable key=value block."""
     parts = [f"--- {table} row ---"]
     for k, v in row.items():
         if v is None:
@@ -25,36 +28,243 @@ def _format_row_as_text(table: str, row: dict) -> str:
     return "\n".join(parts)
 
 
-def _read_document_rows(session, sno_column: str, table: str, sno: int) -> str | None:
-    """Read a document row by its SNO and return formatted text, or None."""
-    if not sno:
-        return None
-    result = session.execute(
-        text(f"SELECT * FROM {table} WHERE {sno_column} = :sno"),
-        {"sno": sno},
-    )
-    row = result.mappings().first()
-    if not row:
-        return None
-    return _format_row_as_text(table, dict(row))
+def _sanitize_body(body: str | None) -> str:
+    if not body:
+        return ""
+    if body.startswith("<"):
+        body = _re.sub(r"<[^>]+>", "", body)
+        body = _re.sub(r"\s+", " ", body).strip()
+    return body
+
+
+def _truncate_oldest(text: str, max_chars: int = 20000) -> str:
+    if len(text) <= max_chars:
+        return text
+    dropped = 0
+    while len(text) > max_chars:
+        parts = text.split("\n\n", 1)
+        if len(parts) < 2:
+            return text[:max_chars] + "\n\n[...truncated]"
+        dropped += 1
+        text = parts[1]
+    logger.info("Truncated %s oldest blocks to fit %s chars", dropped, max_chars)
+    return text + "\n\n[...older content truncated]"
+
+
+def _generate_job_order_story(session, job_ordersno: int) -> None:
+    with _jo_lock:
+        if job_ordersno in _jo_locks:
+            return
+        _jo_locks[job_ordersno] = True
+
+    try:
+        wo_docs = session.execute(
+            text("SELECT * FROM WoExecutionDoc WHERE PlanningMasSno = :sno"),
+            {"sno": job_ordersno},
+        ).mappings().all()
+
+        wo_snos = [r["WoExecutionDocSno"] for r in wo_docs] if wo_docs else []
+
+        if wo_snos:
+            placeholders = ", ".join(f":ws{i}" for i in range(len(wo_snos)))
+            params = {"sno": job_ordersno}
+            params.update({f"ws{i}": s for i, s in enumerate(wo_snos)})
+            emails = session.execute(
+                text(f"""
+                    SELECT * FROM EmailStore
+                    WHERE JOB_ORDERSNO = :sno
+                       OR WoExecutionDocSno IN ({placeholders})
+                    ORDER BY email_date_utc ASC
+                """),
+                params,
+            ).mappings().all()
+        else:
+            emails = session.execute(
+                text("""
+                    SELECT * FROM EmailStore
+                    WHERE JOB_ORDERSNO = :sno
+                    ORDER BY email_date_utc ASC
+                """),
+                {"sno": job_ordersno},
+            ).mappings().all()
+
+        job_order = session.execute(
+            text("SELECT * FROM JOB_ORDER WHERE JobOrderSno = :sno"),
+            {"sno": job_ordersno},
+        ).mappings().first()
+
+        if not emails and not wo_docs:
+            return
+
+        previous_story = None
+        for email in emails:
+            if email.get("ai_summary"):
+                previous_story = email["ai_summary"]
+                break
+        if not previous_story:
+            for doc in wo_docs:
+                if doc.get("ai_summary"):
+                    previous_story = doc["ai_summary"]
+                    break
+        if not previous_story and job_order and job_order.get("ai_summary"):
+            previous_story = job_order["ai_summary"]
+
+        parts = []
+        if previous_story:
+            parts.append(f"Previous story:\n{previous_story}")
+
+        for email in emails:
+            body = _sanitize_body(email.get("body_text") or email.get("body_html"))
+            date_str = str(email.get("email_date_utc") or "")
+            parts.append(
+                f"Email from {email.get('from_address')} on {date_str}:\n"
+                f"Subject: {email.get('subject')}\n{body}"
+            )
+
+        for doc in wo_docs:
+            parts.append(_format_row_as_text("WoExecutionDoc", dict(doc)))
+
+        if job_order:
+            parts.append(_format_row_as_text("JOB_ORDER", dict(job_order)))
+
+        prompt_body = _truncate_oldest("\n\n".join(parts))
+
+        summary = update_summary(prompt_body) if previous_story else summarize_thread(prompt_body)
+        if not summary:
+            return
+
+        for email in emails:
+            session.execute(
+                text("UPDATE EmailStore SET ai_summary = :s WHERE id = :id"),
+                {"s": summary, "id": email["id"]},
+            )
+
+        for doc in wo_docs:
+            session.execute(
+                text("UPDATE WoExecutionDoc SET ai_summary = :s WHERE WoExecutionDocSno = :sno"),
+                {"s": summary, "sno": doc["WoExecutionDocSno"]},
+            )
+
+        if job_order:
+            session.execute(
+                text("UPDATE JOB_ORDER SET ai_summary = :s WHERE JobOrderSno = :sno"),
+                {"s": summary, "sno": job_order["JobOrderSno"]},
+            )
+
+        now = datetime.now(timezone.utc)
+        events = []
+        for email in emails:
+            events.append(AiSummaryEvent(source_table="EmailStore", source_sno=email["id"], ai_summary=summary, created_at=now))
+        for doc in wo_docs:
+            events.append(AiSummaryEvent(source_table="WoExecutionDoc", source_sno=doc["WoExecutionDocSno"], ai_summary=summary, created_at=now))
+        if job_order:
+            events.append(AiSummaryEvent(source_table="JOB_ORDER", source_sno=job_order["JobOrderSno"], ai_summary=summary, created_at=now))
+        for ev in events:
+            session.add(ev)
+
+        session.commit()
+        logger.info("Job-order story for JOB_ORDERSNO=%s (%s emails, %s docs, incremental=%s)", job_ordersno, len(emails), len(wo_docs), bool(previous_story))
+    except Exception:
+        logger.exception("Background job-order story failed for JOB_ORDERSNO=%s", job_ordersno)
+    finally:
+        with _jo_lock:
+            _jo_locks.pop(job_ordersno, None)
+
+
+def _generate_thread_summary(session, row) -> None:
+    norm = _normalize_subject(row.subject)
+    if not norm:
+        return
+
+    with _thread_lock:
+        if norm in _thread_locks:
+            return
+        _thread_locks[norm] = True
+
+    try:
+        siblings = session.execute(
+            select(EmailStore).where(
+                func.lower(EmailStore.subject).contains(norm),
+            )
+        ).scalars().all()
+
+        if not siblings:
+            return
+
+        previous_summary = None
+        for sib in siblings:
+            if sib.ai_summary:
+                previous_summary = sib.ai_summary
+                break
+
+        new_body = _sanitize_body(row.body_text or row.body_html)
+
+        doc_parts = []
+        if row.job_ordersno:
+            doc = session.execute(
+                text("SELECT * FROM JOB_ORDER WHERE JobOrderSno = :sno"),
+                {"sno": row.job_ordersno},
+            ).mappings().first()
+            if doc:
+                doc_parts.append(_format_row_as_text("JOB_ORDER", dict(doc)))
+        if row.wo_execution_doc_sno:
+            doc = session.execute(
+                text("SELECT * FROM WoExecutionDoc WHERE WoExecutionDocSno = :sno"),
+                {"sno": row.wo_execution_doc_sno},
+            ).mappings().first()
+            if doc:
+                doc_parts.append(_format_row_as_text("WoExecutionDoc", dict(doc)))
+
+        if previous_summary:
+            prompt_body = (
+                f"Previous summary:\n{previous_summary}\n\n"
+                f"New message:\nFrom: {row.from_address or 'unknown'}\n"
+                f"Subject: {row.subject or '(no subject)'}\n{new_body}"
+            )
+        else:
+            full_thread = _assemble_thread(row, session)
+            prompt_body = f"Full email thread:\n{full_thread}"
+
+        if doc_parts:
+            prompt_body += "\n\n" + "\n\n".join(doc_parts)
+
+        prompt_body = _truncate_oldest(prompt_body)
+
+        summary = update_summary(prompt_body) if previous_summary else summarize_thread(prompt_body)
+        if not summary:
+            return
+
+        for sib in siblings:
+            sib.ai_summary = summary
+
+        now = datetime.now(timezone.utc)
+        events = [AiSummaryEvent(source_table="EmailStore", source_sno=row.id, ai_summary=summary, created_at=now)]
+
+        if row.job_ordersno:
+            session.execute(
+                text("UPDATE JOB_ORDER SET ai_summary = :s WHERE JobOrderSno = :sno"),
+                {"s": summary, "sno": row.job_ordersno},
+            )
+            events.append(AiSummaryEvent(source_table="JOB_ORDER", source_sno=row.job_ordersno, ai_summary=summary, created_at=now))
+        if row.wo_execution_doc_sno:
+            session.execute(
+                text("UPDATE WoExecutionDoc SET ai_summary = :s WHERE WoExecutionDocSno = :sno"),
+                {"s": summary, "sno": row.wo_execution_doc_sno},
+            )
+            events.append(AiSummaryEvent(source_table="WoExecutionDoc", source_sno=row.wo_execution_doc_sno, ai_summary=summary, created_at=now))
+
+        for ev in events:
+            session.add(ev)
+        session.commit()
+        logger.info("Thread summary for %r (%s emails)", norm, len(siblings))
+    except Exception:
+        logger.exception("Background thread summary failed for email_id=%s", row.id)
+    finally:
+        with _thread_lock:
+            _thread_locks.pop(norm, None)
 
 
 def _generate_combined_summary(email_id: int) -> None:
-    """Background task: generate/update combined AI summary for the
-    email thread AND any matched WoExecutionDoc / JOB_ORDER rows.
-
-    Uses an **incremental** approach:
-      - If any sibling email already has a cached summary → use as context.
-      - Otherwise → full thread text (first email in thread).
-      - Appends the new email's body + any matched document data.
-      - ONE Ollama call → single combined summary.
-
-    Stores the result on:
-      - ALL sibling emails (so opening any email shows the latest summary)
-      - WoExecutionDoc row (if matched on the NEW email)
-      - JOB_ORDER row (if matched on the NEW email)
-      - A new row in ai_summary_event (audit trail)
-    """
     try:
         with session_scope() as session:
             row = session.execute(
@@ -63,132 +273,20 @@ def _generate_combined_summary(email_id: int) -> None:
             if not row:
                 return
 
-            norm = _normalize_subject(row.subject)
-            if not norm:
-                return
+            job_ordersno = row.job_ordersno
+            if not job_ordersno and row.wo_execution_doc_sno:
+                result = session.execute(
+                    text("SELECT PlanningMasSno FROM WoExecutionDoc WHERE WoExecutionDocSno = :sno"),
+                    {"sno": row.wo_execution_doc_sno},
+                ).scalar_one_or_none()
+                if result:
+                    job_ordersno = result
 
-            # Dedup: one background generation per thread at a time
-            with _summary_bg_lock:
-                if norm in _summary_bg_locks:
-                    return
-                _summary_bg_locks[norm] = True
-
-            try:
-                # -------------------------------------------------------
-                # 1. Find ALL siblings in the thread
-                # -------------------------------------------------------
-                siblings = session.execute(
-                    select(EmailStore).where(
-                        func.lower(EmailStore.subject).contains(norm)
-                    )
-                ).scalars().all()
-
-                if not siblings:
-                    return
-
-                # -------------------------------------------------------
-                # 2. Check for a PREVIOUS cached summary on any sibling
-                # -------------------------------------------------------
-                previous_summary = None
-                for sib in siblings:
-                    if sib.ai_summary:
-                        previous_summary = sib.ai_summary
-                        break
-
-                # -------------------------------------------------------
-                # 3. Get the new content (just this email's body)
-                # -------------------------------------------------------
-                new_body = row.body_text or row.body_html or ""
-                if new_body.startswith("<"):
-                    import re as _re
-                    new_body = _re.sub(r"<[^>]+>", "", new_body)
-                    new_body = _re.sub(r"\s+", " ", new_body).strip()
-
-                # -------------------------------------------------------
-                # 4. Read matched document rows
-                # -------------------------------------------------------
-                doc_parts = []
-                if row.job_ordersno:
-                    doc = _read_document_rows(session, "JobOrderSno", "JOB_ORDER", row.job_ordersno)
-                    if doc:
-                        doc_parts.append(doc)
-                if row.wo_execution_doc_sno:
-                    doc = _read_document_rows(session, "WoExecutionDocSno", "WoExecutionDoc", row.wo_execution_doc_sno)
-                    if doc:
-                        doc_parts.append(doc)
-
-                # -------------------------------------------------------
-                # 5. Build the prompt
-                # -------------------------------------------------------
-                if previous_summary:
-                    prompt_body = (
-                        f"Previous summary:\n{previous_summary}\n\n"
-                        f"New message:\nFrom: {row.from_address or 'unknown'}\n"
-                        f"Subject: {row.subject or '(no subject)'}\n"
-                        f"{new_body}"
-                    )
-                else:
-                    # First email in the thread — include all sibling bodies
-                    from app.graphql.queries import _assemble_thread
-                    full_thread = _assemble_thread(row, session)
-                    prompt_body = (
-                        f"Full email thread:\n{full_thread}"
-                    )
-
-                if doc_parts:
-                    prompt_body += "\n\n" + "\n\n".join(doc_parts)
-
-                # -------------------------------------------------------
-                # 6. Call Ollama
-                # -------------------------------------------------------
-                if previous_summary:
-                    summary = update_summary(prompt_body)
-                else:
-                    summary = summarize_thread(prompt_body)
-
-                if not summary:
-                    return
-
-                # -------------------------------------------------------
-                # 7. Store on all sibling emails
-                # -------------------------------------------------------
-                for sib in siblings:
-                    sib.ai_summary = summary
-
-                # -------------------------------------------------------
-                # 8. Store on matched document rows
-                # -------------------------------------------------------
-                if row.job_ordersno:
-                    session.execute(
-                        text("UPDATE JOB_ORDER SET ai_summary = :s WHERE JobOrderSno = :sno"),
-                        {"s": summary, "sno": row.job_ordersno},
-                    )
-                if row.wo_execution_doc_sno:
-                    session.execute(
-                        text("UPDATE WoExecutionDoc SET ai_summary = :s WHERE WoExecutionDocSno = :sno"),
-                        {"s": summary, "sno": row.wo_execution_doc_sno},
-                    )
-
-                # -------------------------------------------------------
-                # 9. Audit trail in ai_summary_event
-                # -------------------------------------------------------
-                now = datetime.now(timezone.utc)
-                events = []
-                events.append(AiSummaryEvent(source_table="EmailStore", source_sno=email_id, ai_summary=summary, created_at=now))
-                if row.job_ordersno:
-                    events.append(AiSummaryEvent(source_table="JOB_ORDER", source_sno=row.job_ordersno, ai_summary=summary, created_at=now))
-                if row.wo_execution_doc_sno:
-                    events.append(AiSummaryEvent(source_table="WoExecutionDoc", source_sno=row.wo_execution_doc_sno, ai_summary=summary, created_at=now))
-                for ev in events:
-                    session.add(ev)
-
-                session.commit()
-                logger.info(
-                    "Combined summary generated for thread %r (%s emails, JOB_ORDER=%s, WoExecutionDoc=%s)",
-                    norm, len(siblings), row.job_ordersno, row.wo_execution_doc_sno,
-                )
-            finally:
-                with _summary_bg_lock:
-                    _summary_bg_locks.pop(norm, None)
+            if job_ordersno:
+                logger.info("Routing to JOB_ORDER story for JOB_ORDERSNO=%s", job_ordersno)
+                _generate_job_order_story(session, job_ordersno)
+            else:
+                logger.info("Routing to per-thread summary (no JOB_ORDERSNO)")
+                _generate_thread_summary(session, row)
     except Exception:
         logger.exception("Background combined-summary failed for email_id=%s", email_id)
