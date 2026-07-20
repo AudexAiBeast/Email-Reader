@@ -122,8 +122,22 @@ class Query:
             ).scalar_one_or_none()
             if not row:
                 return None
+
             if row.ai_summary:
                 return row.ai_summary
+
+            norm = _normalize_subject(row.subject)
+            if norm:
+                sibling_summary = session.execute(
+                    select(EmailStore.ai_summary)
+                    .where(EmailStore.id != email_id)
+                    .where(func.lower(EmailStore.subject).contains(norm))
+                    .where(EmailStore.ai_summary.isnot(None))
+                    .order_by(EmailStore.email_date_utc.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                if sibling_summary:
+                    return sibling_summary
 
         with _summary_lock:
             lock_key = email_id

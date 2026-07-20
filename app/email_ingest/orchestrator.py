@@ -2,11 +2,13 @@ import hashlib
 import json
 import logging
 import posixpath
+import threading
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 
 from app.config import settings
+from app.company.background_summary import _generate_thread_summary
 from app.company.detector import extract_company_name
 from app.db.models import EmailStore
 from app.db.session import session_scope
@@ -150,6 +152,13 @@ def process_message(raw_bytes: bytes, uid: int, mailbox: str) -> bool:
                 return True
 
             session.commit()
+
+            new_id = sp_result["result"]
+            threading.Thread(
+                target=_generate_thread_summary,
+                args=(new_id,),
+                daemon=True,
+            ).start()
 
             logger.info(
                 "Stored message_id=%s uid=%s subject=%r attachments=%s",
