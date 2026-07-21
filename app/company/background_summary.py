@@ -414,6 +414,6 @@ def _generate_combined_summary(email_id: int) -> None:
     except Exception:
         logger.exception("Background combined-summary failed for email_id=%s", email_id)
 
-    # POST to OCR endpoint AFTER session is closed (matched emails only)
-    if job_ordersno and raw_email_b64:
+    # POST to OCR endpoint AFTER session is closed (any email with attachments)
+    if raw_email_b64:
         _post_email_to_ocr(email_id, raw_email_b64)
