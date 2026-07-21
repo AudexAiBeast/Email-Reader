@@ -38,44 +38,54 @@ def summarize_thread(thread_text: str) -> Optional[str]:
     if not thread_text or not thread_text.strip():
         return None
     system_prompt = (
-        "You are audAInsights, a supply-chain AI analyst. Produce a comprehensive "
-        "narrative that tells the complete story of this purchase order or document "
-        "from the first communication to the last. You MUST include:\n"
-        "- ALL company names, contacts, and logistics partners mentioned\n"
+        "You are audAInsights, a supply-chain AI analyst. Build a structured "
+        "summary of this purchase order/document timeline using bullet points "
+        "and conversation-style notes (who said what).\n\n"
+        "Structure your output as:\n"
+        "**Parties Involved:** bullet list of all companies, contacts, roles\n"
+        "**Timeline:** chronological bullet points showing what happened, when, "
+        "and who said/did what (use \"Person → Person: message\" format)\n"
+        "**Key Details:** bullet list of locations, dates, costs, documents, "
+        "action items, decisions\n\n"
+        "You MUST capture:\n"
+        "- ALL company names, contacts, and logistics partners\n"
         "- ALL locations (origin, destination, ports, warehouses)\n"
-        "- ALL key dates (order dates, pickup dates, delays, revised dates)\n"
-        "- ALL charges, costs, and financial details\n"
-        "- ALL decisions, action items, and status changes\n"
+        "- ALL key dates and timeline events\n"
+        "- ALL charges, costs, and financial figures\n"
+        "- ALL decisions, action items, status changes\n"
         "- ALL document references (PO numbers, invoice numbers, document IDs)\n"
-        "Do NOT omit any entity, location, or party. Write in plain text paragraphs "
-        "with no markdown. Be thorough — prioritize completeness over brevity."
+        "Do NOT omit any entity, location, or detail. Be precise and complete."
     )
     text = thread_text.strip()
     if len(text) > 20000:
         text = text[:20000] + "\n\n[...truncated]"
-    prompt = f"Content:\n\n{text}\n\nFull story:"
+    prompt = f"Content:\n\n{text}\n\nStructured summary:"
     return _call_ollama(prompt, system_prompt, timeout=SUMMARIZE_TIMEOUT, max_tokens=4096)
 
 def update_summary(context: str) -> Optional[str]:
-    """Incremental summarization: merge new information into the existing story
-    without dropping any previously mentioned entity or detail."""
+    """Incremental summarization: merge new information into the existing
+    structured summary without dropping any entity or detail."""
     if not context or not context.strip():
         return None
     system_prompt = (
         "You are audAInsights, a supply-chain AI analyst. You are given a previous "
-        "story along with new messages and/or document data. Merge the new information "
-        "into the existing story to produce a single updated comprehensive narrative.\n"
+        "structured summary along with new messages and/or document data. Merge the "
+        "new information into the existing structured summary.\n\n"
+        "Maintain the same structured format:\n"
+        "**Parties Involved:**\n"
+        "**Timeline:**\n"
+        "**Key Details:**\n\n"
         "You MUST:\n"
-        "- Retain ALL entities, parties, and locations from the previous story\n"
-        "- Incorporate ALL new parties, dates, charges, and events from the new content\n"
+        "- Retain ALL entities, parties, locations, and events from the previous summary\n"
+        "- Incorporate ALL new parties, dates, charges, events from the new content\n"
         "- NOT drop or omit anything previously mentioned\n"
-        "- Write a flowing plain-text narrative with no markdown\n"
-        "Prioritize completeness over brevity."
+        "- Use conversation-style \"Who → Who: what was said\" format in Timeline\n"
+        "Be precise and complete."
     )
     text = context.strip()
     if len(text) > 20000:
         text = text[:20000] + "\n\n[...truncated]"
-    prompt = f"Context:\n\n{text}\n\nUpdated full story:"
+    prompt = f"Context:\n\n{text}\n\nUpdated structured summary:"
     return _call_ollama(prompt, system_prompt, timeout=SUMMARIZE_TIMEOUT, max_tokens=4096)
 
 
