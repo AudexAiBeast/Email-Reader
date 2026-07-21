@@ -1,11 +1,15 @@
+import base64
+import json
 import logging
 import re as _re
 import threading
 from datetime import datetime, timezone
 
+import httpx
 from sqlalchemy import func, select, text
 
 from app.company.ollama_client import summarize_thread, update_summary
+from app.config import settings
 from app.db.models import AiSummaryEvent, EmailStore
 from app.db.session import session_scope
 from app.graphql.queries import _assemble_thread, _normalize_subject
@@ -264,7 +268,80 @@ def _generate_thread_summary(session, row) -> None:
             _thread_locks.pop(norm, None)
 
 
+_OCR_ALLOWED_EXTENSIONS = {".pdf", ".doc", ".docx"}
+_OCR_MIN_FILE_BYTES = 10240  # 10 KB — skip tiny files (signatures, icons)
+
+
+def _post_email_to_ocr(email_id: int, raw_email_b64: str) -> None:
+    """Extract PDF/image attachments from the raw email and POST each to
+    the external OCR endpoint. Only fires when JOB_ORDERSNO is matched."""
+    import email as eml
+    from email import policy as eml_policy
+
+    url = settings.ocr_endpoint_url
+    if not url:
+        return
+    try:
+        raw_bytes = base64.b64decode(raw_email_b64)
+        msg = eml.message_from_bytes(raw_bytes, policy=eml_policy.default)
+
+        attachments = []
+        if msg.is_multipart():
+            for part in msg.walk():
+                if part.is_multipart():
+                    continue
+                fn = part.get_filename()
+                if not fn:
+                    continue
+                ext = "." + fn.rsplit(".", 1)[-1].lower() if "." in fn else ""
+                if ext not in _OCR_ALLOWED_EXTENSIONS:
+                    continue
+                content = part.get_payload(decode=True)
+                if content and len(content) >= _OCR_MIN_FILE_BYTES:
+                    attachments.append((fn, content))
+        else:
+            # Single-part email: try sending body as text if it's short
+            pass
+
+        if not attachments:
+            logger.info("No OCR-able attachments in email %s", email_id)
+            return
+
+        results = []
+        for fn, content in attachments:
+            files = {"file": (fn, content)}
+            resp = httpx.post(url, files=files, timeout=120)
+            resp.raise_for_status()
+            results.append({"filename": fn, "status": resp.status_code, "response": resp.text})
+            logger.info("OCR POST for email %s attachment %r → status %s", email_id, fn, resp.status_code)
+
+        with session_scope() as session:
+            existing = session.execute(
+                select(EmailStore.ocr_markdown_paths).where(EmailStore.id == email_id)
+            ).scalar_one_or_none()
+            if existing:
+                try:
+                    paths = json.loads(existing)
+                except (json.JSONDecodeError, TypeError):
+                    paths = []
+                if not isinstance(paths, list):
+                    paths = [paths]
+            else:
+                paths = []
+            paths.append({"source": "external_ocr", "attachments": results})
+            session.execute(
+                text("UPDATE EmailStore SET ocr_markdown_paths = :s WHERE id = :id"),
+                {"s": json.dumps(paths), "id": email_id},
+            )
+            session.commit()
+        logger.info("OCR POST for email %s: %s attachment(s) sent to %s", email_id, len(attachments), url)
+    except Exception:
+        logger.exception("OCR POST failed for email_id=%s to %s", email_id, url)
+
+
 def _generate_combined_summary(email_id: int) -> None:
+    raw_email_b64 = None
+    job_ordersno = None
     try:
         with session_scope() as session:
             row = session.execute(
@@ -282,6 +359,8 @@ def _generate_combined_summary(email_id: int) -> None:
                 if result:
                     job_ordersno = result
 
+            raw_email_b64 = row.raw_email
+
             if job_ordersno:
                 logger.info("Routing to JOB_ORDER story for JOB_ORDERSNO=%s", job_ordersno)
                 _generate_job_order_story(session, job_ordersno)
@@ -290,3 +369,7 @@ def _generate_combined_summary(email_id: int) -> None:
                 _generate_thread_summary(session, row)
     except Exception:
         logger.exception("Background combined-summary failed for email_id=%s", email_id)
+
+    # POST to OCR endpoint AFTER session is closed (matched emails only)
+    if job_ordersno and raw_email_b64:
+        _post_email_to_ocr(email_id, raw_email_b64)

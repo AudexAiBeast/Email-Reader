@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import logging
@@ -117,6 +118,8 @@ def process_message(raw_bytes: bytes, uid: int, mailbox: str) -> bool:
             except Exception:
                 logger.exception("OCR pipeline error for message_id=%s", message_id)
 
+            raw_email_b64 = base64.b64encode(raw_bytes).decode("ascii")
+
             sp_result = call_sp(session, "dbo.sp_InsertEmailStore",
                 message_id=message_id,
                 message_id_raw=parsed.message_id_raw,
@@ -141,6 +144,7 @@ def process_message(raw_bytes: bytes, uid: int, mailbox: str) -> bool:
                 company_domain_source=company_info.get("domain_source"),
                 company_signature_source=company_info.get("signature_source"),
                 ocr_markdown_paths=json.dumps(ocr_results) if ocr_results else None,
+                raw_email=raw_email_b64,
                 mailbox=mailbox,
             )
 

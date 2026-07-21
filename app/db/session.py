@@ -24,6 +24,7 @@ _NEW_COLUMNS = [
     ("ocr_markdown_paths", "NVARCHAR(MAX)"),
     ("JOB_ORDERSNO", "INT"),
     ("WoExecutionDocSno", "INT"),
+    ("raw_email", "NVARCHAR(MAX)"),
 ]
 
 

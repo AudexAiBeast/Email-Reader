@@ -7,3 +7,4 @@ Backend (FastAPI):
 Frontend (Vite/React):
   cd C:\Users\FusionGamingMasterPC\Desktop\mailreader\frontend
   npm run dev
+      

@@ -44,6 +44,7 @@ class EmailStore(Base):
 
     ai_summary: Mapped[str | None] = mapped_column(NVARCHAR("max"))
     ocr_markdown_paths: Mapped[str | None] = mapped_column(NVARCHAR("max"))
+    raw_email: Mapped[str | None] = mapped_column(NVARCHAR("max"))
 
     job_ordersno: Mapped[int | None] = mapped_column("JOB_ORDERSNO", Integer)
     wo_execution_doc_sno: Mapped[int | None] = mapped_column("WoExecutionDocSno", Integer)

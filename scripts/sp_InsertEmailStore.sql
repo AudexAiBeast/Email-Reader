@@ -43,6 +43,7 @@ CREATE OR ALTER PROCEDURE [dbo].[sp_InsertEmailStore]
     @company_domain_source  NVARCHAR(255)  = NULL,
     @company_signature_source NVARCHAR(255) = NULL,
     @ocr_markdown_paths     NVARCHAR(MAX)  = NULL,
+    @raw_email              NVARCHAR(MAX)  = NULL,
     @mailbox                NVARCHAR(255)  = NULL
 AS
 BEGIN
@@ -99,6 +100,7 @@ BEGIN
             company_domain_source,
             company_signature_source,
             ocr_markdown_paths,
+            raw_email,
             mailbox,
             created_at,
             JOB_ORDERSNO,
@@ -127,6 +129,7 @@ BEGIN
             @company_domain_source,
             @company_signature_source,
             @ocr_markdown_paths,
+            @raw_email,
             @mailbox,
             GETUTCDATE(),
             @JOB_ORDERSNO,

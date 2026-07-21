@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     mssql_password: str = ""
     mssql_driver: str = "ODBC Driver 17 for SQL Server"
 
+    # OCR endpoint for matched emails
+    ocr_endpoint_url: str = ""
+
     # Service tuning
     idle_renew_seconds: int = 1200
     imap_socket_timeout_seconds: int = 60
