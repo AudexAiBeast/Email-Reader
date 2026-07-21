@@ -108,6 +108,14 @@ class FtpClient:
         entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
         return entries
 
+    def ensure_dir(self, remote_dir: str) -> None:
+        self._ensure_dir(remote_dir)
+
+    def move(self, src_path: str, dst_path: str) -> None:
+        """Rename (move) a file on the FTP server."""
+        assert self._ftp is not None
+        self._ftp.rename(src_path, dst_path)
+
     def download(self, remote_path: str) -> bytes:
         """Downloads a single file's bytes given its full remote path."""
         assert self._ftp is not None

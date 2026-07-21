@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import posixpath
 import re as _re
 import threading
 from datetime import datetime, timezone
@@ -273,19 +274,39 @@ _OCR_MIN_FILE_BYTES = 10240  # 10 KB — skip tiny files (signatures, icons)
 
 
 def _post_email_to_ocr(email_id: int, raw_email_b64: str) -> None:
-    """Extract PDF/image attachments from the raw email and POST each to
-    the external OCR endpoint. Only fires when JOB_ORDERSNO is matched."""
+    """Extract PDF/Word attachments from the raw email, POST each to the
+    external OCR endpoint, then MOVE the file on FTP to /processed/ (200 OK)
+    or /failed/ (any other status). Only fires when JOB_ORDERSNO is matched."""
     import email as eml
     from email import policy as eml_policy
+
+    from app.email_ingest.ftp_client import FtpClient
 
     url = settings.ocr_endpoint_url
     if not url:
         return
+
+    # 1. Read stored attachment FTP paths from DB
+    ftp_paths_by_filename: dict[str, str] = {}
+    with session_scope() as s2:
+        row = s2.execute(
+            select(EmailStore.attachments).where(EmailStore.id == email_id)
+        ).scalar_one_or_none()
+        if row:
+            try:
+                att_json = json.loads(row)
+                for category, file_map in att_json.items():
+                    for idx, remote_path in file_map.items():
+                        fname = remote_path.rsplit("/", 1)[-1]
+                        ftp_paths_by_filename[fname] = remote_path
+            except (json.JSONDecodeError, TypeError):
+                pass
+
     try:
         raw_bytes = base64.b64decode(raw_email_b64)
         msg = eml.message_from_bytes(raw_bytes, policy=eml_policy.default)
 
-        attachments = []
+        candidates = []
         if msg.is_multipart():
             for part in msg.walk():
                 if part.is_multipart():
@@ -298,22 +319,45 @@ def _post_email_to_ocr(email_id: int, raw_email_b64: str) -> None:
                     continue
                 content = part.get_payload(decode=True)
                 if content and len(content) >= _OCR_MIN_FILE_BYTES:
-                    attachments.append((fn, content))
+                    candidates.append((fn, content))
         else:
-            # Single-part email: try sending body as text if it's short
             pass
 
-        if not attachments:
+        if not candidates:
             logger.info("No OCR-able attachments in email %s", email_id)
             return
 
         results = []
-        for fn, content in attachments:
-            files = {"file": (fn, content)}
-            resp = httpx.post(url, files=files, timeout=120)
-            resp.raise_for_status()
-            results.append({"filename": fn, "status": resp.status_code, "response": resp.text})
-            logger.info("OCR POST for email %s attachment %r → status %s", email_id, fn, resp.status_code)
+        with FtpClient(settings) as ftp:
+            for fn, content in candidates:
+                files = {"file": (fn, content)}
+                resp = httpx.post(url, files=files, timeout=120)
+                ocr_ok = resp.status_code == 200
+                status = "processed" if ocr_ok else "failed"
+                results.append({
+                    "filename": fn, "status": resp.status_code,
+                    "ocr_result": status, "response": resp.text,
+                })
+                logger.info(
+                    "OCR POST for email %s attachment %r → %s (%s)",
+                    email_id, fn, resp.status_code, status,
+                )
+
+                # Move file on FTP to /<status>/<filename>
+                dst_dir = f"/{status}"
+                src_path = None
+                for fname, path in ftp_paths_by_filename.items():
+                    if fn in fname or fname in fn:
+                        src_path = path
+                        break
+                if src_path:
+                    try:
+                        ftp.ensure_dir(dst_dir)
+                        dst = posixpath.join(dst_dir, fn)
+                        ftp.move(src_path, dst)
+                        logger.info("Moved %s → %s", src_path, dst)
+                    except Exception:
+                        logger.exception("Failed to move %s to %s", src_path, dst_dir)
 
         with session_scope() as session:
             existing = session.execute(
@@ -334,7 +378,7 @@ def _post_email_to_ocr(email_id: int, raw_email_b64: str) -> None:
                 {"s": json.dumps(paths), "id": email_id},
             )
             session.commit()
-        logger.info("OCR POST for email %s: %s attachment(s) sent to %s", email_id, len(attachments), url)
+        logger.info("OCR batch for email %s: %s file(s) sent", email_id, len(candidates))
     except Exception:
         logger.exception("OCR POST failed for email_id=%s to %s", email_id, url)
 
