@@ -343,8 +343,8 @@ def _post_email_to_ocr(email_id: int, raw_email_b64: str) -> None:
                     email_id, fn, resp.status_code, status,
                 )
 
-                # Move file on FTP to /<status>/<filename>
-                dst_dir = f"/{status}"
+                # Move file on FTP to /shippment docs/<status>/<filename>
+                dst_dir = f"/shippment docs/{status}"
                 src_path = None
                 for fname, path in ftp_paths_by_filename.items():
                     if fn in fname or fname in fn:
